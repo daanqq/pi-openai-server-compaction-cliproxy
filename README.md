@@ -49,6 +49,7 @@ https://x.com/alexisgallagher/status/2042396986327060736?s=20 .)
 | `openai/*`            | Yes                         | Yes                               | Yes                              | Yes         |
 | `openai-codex/*`      | Yes                         | No (built-in transport retained)  | No (built-in transport retained) | Yes         |
 | Azure                 | Partial (opt-in via config) | Partial                           | No                               | No          |
+| Configured Responses-compatible proxies (including `cliproxy/*`) | Prototype | Explicit history replay | No | Offline-tested |
 
 ## Install
 
@@ -75,7 +76,7 @@ pi -e ./src/index.ts --model openai/gpt-5.6-luna
 ## Requirements
 
 - Node `>= 22`
-- Pi `>=0.80.9 <0.81.0`
+- Pi `>=0.85.0 <0.86.0`
 - Auth/config for the model you want to use must already work in Pi
 - A supported OpenAI Responses model, e.g. `openai/gpt-5.6-sol` or `openai-codex/gpt-5.6-sol`
 
@@ -131,6 +132,7 @@ Config is read from:
 {
   "enabled": true,
   "includeAzure": false,
+  "compatibleProviders": ["cliproxy"],
   "thresholdRatio": 0.7,
   "compactThreshold": 0,
   "usePreviousResponseId": true,
@@ -144,10 +146,13 @@ Environment overrides:
 |----------------------------------------------------|-------------------------------------------------------------|
 | `PI_OPENAI_SERVER_COMPACTION_ENABLED`              | Enable/disable the extension                                |
 | `PI_OPENAI_SERVER_COMPACTION_AZURE`                | Include Azure OpenAI models                                 |
+| `PI_OPENAI_SERVER_COMPACTION_COMPATIBLE_PROVIDERS` | Comma-separated OpenAI Responses-compatible provider IDs    |
 | `PI_OPENAI_SERVER_COMPACTION_THRESHOLD`            | Explicit compact threshold (tokens)                         |
 | `PI_OPENAI_SERVER_COMPACTION_RATIO`                | Compact threshold as ratio of context window (default: 0.7) |
 | `PI_OPENAI_SERVER_COMPACTION_PREVIOUS_RESPONSE_ID` | Enable/disable `previous_response_id`                       |
 | `PI_OPENAI_SERVER_COMPACTION_NOTIFY`               | Show UI notifications when features activate                |
+
+`compatibleProviders` defaults to `["cliproxy"]` in this fork. Set it to `[]` to disable proxy support. `usePreviousResponseId` remains limited to direct OpenAI/Azure paths; configured proxy providers use explicit compaction-history replay.
 
 ## Troubleshooting
 
@@ -185,6 +190,7 @@ PI_OPENAI_SERVER_COMPACTION_TEST_MODEL=openai-codex/gpt-5.6-sol npm run test:liv
 - Opaque remote compaction artifacts are only reused for compatible OpenAI Responses turns
 - Switching to a different provider/model falls back to Pi's text-summary portability path
 - Compaction usage/cost is captured in details but not yet folded into Pi's `get_session_stats()` (requires Pi core changes)
+- Responses-compatible proxy support uses explicit opaque-history replay over Pi's normal HTTP transport. The proxy must pass through `compaction_trigger` requests and returned `compaction` items, and must route replay to a compatible upstream model.
 
 ## Repo layout
 

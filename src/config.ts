@@ -13,6 +13,7 @@ export type JsonRecord = Record<string, unknown>;
 export type ExtensionConfig = {
   enabled?: boolean;
   includeAzure?: boolean;
+  compatibleProviders?: string[];
   compactThreshold?: number;
   thresholdRatio?: number;
   notify?: boolean;
@@ -52,6 +53,22 @@ function toPositiveNumber(value: unknown): number | undefined {
   return undefined;
 }
 
+function toProviderList(value: unknown): string[] | undefined {
+  const values = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(",")
+      : undefined;
+  if (!values) return undefined;
+
+  return [...new Set(
+    values
+      .filter((provider): provider is string => typeof provider === "string")
+      .map((provider) => provider.trim())
+      .filter(Boolean),
+  )];
+}
+
 export function loadConfig(cwd: string): Required<ExtensionConfig> {
   const globalPath = join(homedir(), ".pi", "agent", "openai-server-compaction.json");
   const projectPath = join(cwd, ".pi", "openai-server-compaction.json");
@@ -68,6 +85,10 @@ export function loadConfig(cwd: string): Required<ExtensionConfig> {
       toBoolean(process.env.PI_OPENAI_SERVER_COMPACTION_AZURE) ??
       toBoolean(merged.includeAzure) ??
       false,
+    compatibleProviders:
+      toProviderList(process.env.PI_OPENAI_SERVER_COMPACTION_COMPATIBLE_PROVIDERS) ??
+      toProviderList(merged.compatibleProviders) ??
+      ["cliproxy"],
     compactThreshold:
       toPositiveNumber(process.env.PI_OPENAI_SERVER_COMPACTION_THRESHOLD) ??
       toPositiveNumber(merged.compactThreshold) ??

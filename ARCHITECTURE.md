@@ -40,7 +40,8 @@ In practice, that means keeping two representations of context alive at once:
    - sends the request over the OpenAI Responses WebSocket transport, or
    - falls back to Pi's default HTTP Responses streaming path.
 6. For `openai-codex/*`, the extension mostly leaves the built-in Codex provider transport alone and only injects reconstructed remote-compaction history when needed.
-7. When a compatible assistant message completes, `src/index.ts` records the new `responseId` as continuation state only for the backends that support `previous_response_id`.
+7. For allowlisted Responses-compatible proxies such as `cliproxy/*`, the extension keeps Pi's normal HTTP transport and injects reconstructed remote-compaction history directly into the outgoing `input` after a compaction boundary.
+8. When a compatible assistant message completes, `src/index.ts` records the new `responseId` as continuation state only for the backends that support `previous_response_id`.
 
 ### Compaction turn
 
@@ -61,6 +62,8 @@ For later direct OpenAI Responses turns, the extension prefers:
 - the persisted/reconstructed remote replacement history, when model-compatible
 - otherwise safe live continuation using `previous_response_id`
 - otherwise ordinary full-input replay / Pi fallback behavior
+
+For allowlisted proxy providers, it replays the persisted opaque replacement history explicitly and does not enable the direct-OpenAI WebSocket or `previous_response_id` paths.
 
 ## Persisted state vs runtime state
 

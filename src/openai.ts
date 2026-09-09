@@ -77,6 +77,14 @@ export function isOpenAICodexResponsesModel(model: ModelLike): boolean {
   return host === "chatgpt.com";
 }
 
+export function isConfiguredCompatibleResponsesModel(
+  model: unknown,
+  cfg: Required<ExtensionConfig>,
+): model is ModelLike {
+  if (!isOpenAIResponsesModel(model) || model.api !== "openai-responses") return false;
+  return typeof model.provider === "string" && cfg.compatibleProviders.includes(model.provider);
+}
+
 export function supportsPreviousResponseId(
   model: unknown,
   cfg: Required<ExtensionConfig>,
@@ -86,9 +94,16 @@ export function supportsPreviousResponseId(
   return cfg.includeAzure && isAzureOpenAIResponsesModel(model);
 }
 
-export function supportsRemoteCompactionModel(model: unknown): model is ModelLike {
+export function supportsRemoteCompactionModel(
+  model: unknown,
+  cfg: Required<ExtensionConfig>,
+): model is ModelLike {
   if (!isOpenAIResponsesModel(model)) return false;
-  return isDirectOpenAIResponsesModel(model) || isOpenAICodexResponsesModel(model);
+  return (
+    isDirectOpenAIResponsesModel(model) ||
+    isOpenAICodexResponsesModel(model) ||
+    isConfiguredCompatibleResponsesModel(model, cfg)
+  );
 }
 
 export function resolveCompactThreshold(

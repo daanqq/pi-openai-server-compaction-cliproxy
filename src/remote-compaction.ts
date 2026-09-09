@@ -21,9 +21,10 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { calculateCost, type Model, type Usage } from "@earendil-works/pi-ai";
 import { complete } from "@earendil-works/pi-ai/compat";
-import { isRecord } from "./config.ts";
+import { isRecord, type ExtensionConfig } from "./config.ts";
 import {
   hostnameFromBaseUrl,
+  isConfiguredCompatibleResponsesModel,
   isDirectOpenAIResponsesModel,
   isOpenAICodexResponsesModel,
   supportsRemoteCompactionModel,
@@ -124,8 +125,14 @@ function resolveCodexResponsesEndpoint(model: Model<any>): string {
   return `${baseUrl}/codex/responses`;
 }
 
-export function remoteCompactionV2EndpointUrl(model: Model<any>): string {
-  if (isDirectOpenAIResponsesModel(model)) {
+export function remoteCompactionV2EndpointUrl(
+  model: Model<any>,
+  cfg: Required<ExtensionConfig>,
+): string {
+  if (
+    isDirectOpenAIResponsesModel(model) ||
+    isConfiguredCompatibleResponsesModel(model, cfg)
+  ) {
     return resolveDirectOpenAIResponsesEndpoint(model);
   }
   if (isOpenAICodexResponsesModel(model)) {
@@ -216,19 +223,28 @@ function withRemoteCompactionV2Feature(headers: Record<string, string>): Record<
 
 export function buildRemoteCompactionHeaders(params: {
   model: Model<any>;
+  config: Required<ExtensionConfig>;
   apiKey: string;
   headers?: Record<string, string>;
   sessionId?: string;
 }): Record<string, string> {
-  const codexIdentityHeaders = buildCodexIdentityHeaders(params.sessionId);
-  const commonHeaders = withRemoteCompactionV2Feature({
+  const baseHeaders = {
     authorization: `Bearer ${params.apiKey}`,
-    ...codexIdentityHeaders,
     ...(params.headers ?? {}),
     accept: "text/event-stream",
     "content-type": "application/json",
+  };
+  if (isConfiguredCompatibleResponsesModel(params.model, params.config)) {
+    return withRemoteCompactionV2Feature(baseHeaders);
+  }
+
+  const commonHeaders = withRemoteCompactionV2Feature({
+    ...baseHeaders,
+    ...buildCodexIdentityHeaders(params.sessionId),
   });
-  if (isDirectOpenAIResponsesModel(params.model)) {
+  if (
+    isDirectOpenAIResponsesModel(params.model)
+  ) {
     return commonHeaders;
   }
   if (isOpenAICodexResponsesModel(params.model)) {
@@ -918,6 +934,7 @@ export function parseRemoteCompactionV2Events(events: unknown[]): RemoteCompacti
 
 export async function callRemoteCompactionEndpoint(params: {
   model: Model<any>;
+  config: Required<ExtensionConfig>;
   apiKey: string;
   headers?: Record<string, string>;
   sessionId?: string;
@@ -929,14 +946,15 @@ export async function callRemoteCompactionEndpoint(params: {
   text?: ResponsesTextConfig;
   signal?: AbortSignal;
 }): Promise<RemoteCompactionResult> {
-  if (!supportsRemoteCompactionModel(params.model)) {
+  if (!supportsRemoteCompactionModel(params.model, params.config)) {
     throw new Error("Remote compaction v2 is currently only enabled for supported OpenAI-compatible Responses models.");
   }
 
-  const response = await fetch(remoteCompactionV2EndpointUrl(params.model), {
+  const response = await fetch(remoteCompactionV2EndpointUrl(params.model, params.config), {
     method: "POST",
     headers: buildRemoteCompactionHeaders({
       model: params.model,
+      config: params.config,
       apiKey: params.apiKey,
       headers: params.headers,
       sessionId: params.sessionId,

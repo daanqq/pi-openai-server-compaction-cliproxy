@@ -100,6 +100,7 @@ const {
   buildRemoteCompactionDetails,
   buildRemoteCompactionRequestBody,
   buildRemoteCompactionV2History,
+  callRemoteCompactionEndpoint,
   extractRemoteCompactionDetails,
   normalizeResponseItemsForPrompt,
   parseRemoteCompactionV2Events,
@@ -108,10 +109,24 @@ const {
   remoteCompactionV2EndpointUrl,
 } = await import(pathToFileURL(join(repoRoot, "src", "remote-compaction.ts")).href);
 const {
+  applyRemoteHistoryPayloadPatch,
+  isConfiguredCompatibleResponsesModel,
+  supportsRemoteCompactionModel,
+} = await import(pathToFileURL(join(repoRoot, "src", "openai.ts")).href);
+const {
   selectInputItemsForContinuation,
 } = await import(pathToFileURL(join(repoRoot, "src", "openai-ws-stream.ts")).href);
 
 const targetModelKey = "openai:openai-responses:gpt-5.4-nano";
+const extensionConfig = {
+  enabled: true,
+  includeAzure: false,
+  compatibleProviders: ["cliproxy"],
+  compactThreshold: 0,
+  thresholdRatio: 0.7,
+  notify: false,
+  usePreviousResponseId: false,
+};
 const reconstructed = reconstructRemoteCompactionStateFromBranch({
   branchEntries: [
     {
@@ -223,7 +238,7 @@ assert.equal(
     provider: "openai",
     api: "openai-responses",
     baseUrl: "https://api.openai.com/v1",
-  }),
+  }, extensionConfig),
   "https://api.openai.com/v1/responses",
 );
 assert.equal(
@@ -231,9 +246,114 @@ assert.equal(
     provider: "openai-codex",
     api: "openai-codex-responses",
     baseUrl: "https://chatgpt.com/backend-api",
-  }),
+  }, extensionConfig),
   "https://chatgpt.com/backend-api/codex/responses",
 );
+const cliProxyModel = {
+  provider: "cliproxy",
+  api: "openai-responses",
+  id: "sol",
+  baseUrl: "http://127.0.0.1:8317/v1",
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+};
+assert.equal(isConfiguredCompatibleResponsesModel(cliProxyModel, extensionConfig), true);
+assert.equal(supportsRemoteCompactionModel(cliProxyModel, extensionConfig), true);
+assert.equal(
+  isConfiguredCompatibleResponsesModel(
+    { ...cliProxyModel, provider: "unlisted-proxy" },
+    extensionConfig,
+  ),
+  false,
+);
+assert.equal(
+  remoteCompactionV2EndpointUrl(cliProxyModel, extensionConfig),
+  "http://127.0.0.1:8317/v1/responses",
+);
+assert.deepEqual(
+  applyRemoteHistoryPayloadPatch({
+    payload: { model: "sol", input: [{ role: "user", content: "ordinary Pi history" }] },
+    explicitHistory: [
+      { type: "compaction", encrypted_content: "PROXY_ENCRYPTED" },
+      { type: "message", role: "user", content: "new turn" },
+    ],
+  }),
+  {
+    model: "sol",
+    input: [
+      { type: "compaction", encrypted_content: "PROXY_ENCRYPTED" },
+      { type: "message", role: "user", content: "new turn" },
+    ],
+  },
+);
+
+const extensionHandlers = new Map();
+extensionFactory({
+  registerProvider() {},
+  on(eventName, handler) {
+    const handlers = extensionHandlers.get(eventName) ?? [];
+    handlers.push(handler);
+    extensionHandlers.set(eventName, handlers);
+  },
+  getThinkingLevel() {
+    return "medium";
+  },
+  getAllTools() {
+    return [];
+  },
+  getActiveTools() {
+    return [];
+  },
+});
+const proxyCompactionEntry = {
+  type: "compaction",
+  id: "proxy-cmp-1",
+  details: {
+    remoteCompaction: {
+      version: 2,
+      provider: "openai-responses-compaction",
+      implementation: "responses_compaction_v2",
+      modelKey: "cliproxy:openai-responses:sol",
+      replacementHistory: [{ type: "compaction", encrypted_content: "PROXY_ENCRYPTED" }],
+    },
+  },
+};
+const proxyContext = {
+  cwd: repoRoot,
+  model: cliProxyModel,
+  hasUI: false,
+  ui: { notify() {} },
+  sessionManager: {
+    getSessionId() {
+      return "cliproxy-smoke-session";
+    },
+    getBranch() {
+      return [proxyCompactionEntry];
+    },
+  },
+};
+await extensionHandlers.get("session_start")[0]({ reason: "startup" }, proxyContext);
+await extensionHandlers.get("message_end")[0](
+  {
+    message: {
+      role: "user",
+      content: [{ type: "text", text: "portable summary" }],
+    },
+  },
+  proxyContext,
+);
+const patchedProxyRequest = await extensionHandlers.get("before_provider_request")[0](
+  { payload: { model: "sol", input: [{ role: "user", content: "portable summary" }] } },
+  proxyContext,
+);
+assert.deepEqual(patchedProxyRequest.input, [
+  { type: "compaction", encrypted_content: "PROXY_ENCRYPTED" },
+  {
+    type: "message",
+    role: "user",
+    content: [{ type: "input_text", text: "portable summary" }],
+  },
+]);
+assert.equal("previous_response_id" in patchedProxyRequest, false);
 
 const parsedV2Events = parseRemoteCompactionV2Events([
   {
@@ -300,6 +420,7 @@ const compactionHeaders = buildRemoteCompactionHeaders({
     api: "openai-responses",
     id: "gpt-5.4-nano",
   },
+  config: extensionConfig,
   apiKey: "sk-test",
   sessionId: "session-123",
   headers: { "x-extra": "yes" },
@@ -311,6 +432,51 @@ assert.match(compactionHeaders["x-codex-installation-id"], /^[0-9a-f-]{36}$/);
 assert.equal(compactionHeaders["x-extra"], "yes");
 assert.equal(compactionHeaders["x-codex-beta-features"], "remote_compaction_v2");
 assert.equal(compactionHeaders.accept, "text/event-stream");
+
+const cliProxyHeaders = buildRemoteCompactionHeaders({
+  model: cliProxyModel,
+  config: extensionConfig,
+  apiKey: "proxy-key",
+});
+assert.equal(cliProxyHeaders.authorization, "Bearer proxy-key");
+assert.equal(cliProxyHeaders.accept, "text/event-stream");
+assert.equal(cliProxyHeaders["x-codex-beta-features"], "remote_compaction_v2");
+assert.equal("x-codex-installation-id" in cliProxyHeaders, false);
+assert.equal("x-codex-window-id" in cliProxyHeaders, false);
+assert.equal("session_id" in cliProxyHeaders, false);
+
+const originalFetch = globalThis.fetch;
+let capturedProxyRequest;
+globalThis.fetch = async (url, init) => {
+  capturedProxyRequest = { url: String(url), init };
+  return new Response(
+    [
+      'data: {"type":"response.output_item.done","item":{"type":"compaction","encrypted_content":"FETCH_ENCRYPTED"}}',
+      'data: {"type":"response.completed","response":{"usage":{"input_tokens":9,"output_tokens":2,"total_tokens":11}}}',
+      "",
+    ].join("\n\n"),
+    { status: 200, headers: { "content-type": "text/event-stream" } },
+  );
+};
+try {
+  const proxyCompactionResult = await callRemoteCompactionEndpoint({
+    model: cliProxyModel,
+    config: extensionConfig,
+    apiKey: "proxy-key",
+    input: [{ type: "message", role: "user", content: "remember this" }],
+    tools: [],
+    parallelToolCalls: true,
+  });
+  assert.equal(capturedProxyRequest.url, "http://127.0.0.1:8317/v1/responses");
+  assert.equal(capturedProxyRequest.init.method, "POST");
+  const capturedBody = JSON.parse(capturedProxyRequest.init.body);
+  assert.deepEqual(capturedBody.input.at(-1), { type: "compaction_trigger" });
+  assert.equal(capturedProxyRequest.init.headers.authorization, "Bearer proxy-key");
+  assert.equal(proxyCompactionResult.output.at(-1).encrypted_content, "FETCH_ENCRYPTED");
+  assert.equal(proxyCompactionResult.usage.totalTokens, 11);
+} finally {
+  globalThis.fetch = originalFetch;
+}
 
 const websocketHeaders = buildCodexWebSocketHeaders("session-123");
 assert.equal(websocketHeaders["x-client-request-id"], "session-123");

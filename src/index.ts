@@ -14,6 +14,7 @@ import {
   extractAssistantResponseId,
   extractResponsesReasoningConfig,
   extractResponsesTextConfig,
+  isConfiguredCompatibleResponsesModel,
   isOpenAICodexResponsesModel,
   looksLikeResponsesPayload,
   messageMatchesModel,
@@ -85,6 +86,16 @@ function getBranchThinkingLevel(branchEntries: BranchEntry[]): string | undefine
     return typeof entry.thinkingLevel === "string" ? entry.thinkingLevel : undefined;
   }
   return undefined;
+}
+
+function toRequestHeaders(
+  headers: Readonly<Record<string, string | null>> | undefined,
+): Record<string, string> | undefined {
+  if (!headers) return undefined;
+  const requestHeaders = Object.fromEntries(
+    Object.entries(headers).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+  );
+  return Object.keys(requestHeaders).length > 0 ? requestHeaders : undefined;
 }
 
 function clearLiveContinuation(sessionId: string | undefined): void {
@@ -202,10 +213,11 @@ export default function openaiServerCompactionExtension(pi: ExtensionAPI) {
   pi.on("session_before_compact", async (event, ctx) => {
     const cfg = loadConfig(ctx.cwd);
     const model = ctx.model;
-    if (!cfg.enabled || !model || !supportsRemoteCompactionModel(model)) return undefined;
+    if (!cfg.enabled || !model || !supportsRemoteCompactionModel(model, cfg)) return undefined;
 
     const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
     if (!auth.ok || !auth.apiKey) return undefined;
+    const requestHeaders = toRequestHeaders(auth.headers);
 
     const tools = buildToolsPayload(pi.getAllTools(), pi.getActiveTools());
     const sessionId = getSessionId(ctx);
@@ -230,7 +242,7 @@ export default function openaiServerCompactionExtension(pi: ExtensionAPI) {
         messages: fullBranchMessages,
         model,
         apiKey: auth.apiKey,
-        headers: auth.headers,
+        headers: requestHeaders,
         customInstructions: event.customInstructions,
         signal: event.signal,
         thinkingLevel,
@@ -239,8 +251,9 @@ export default function openaiServerCompactionExtension(pi: ExtensionAPI) {
       }),
       callRemoteCompactionEndpoint({
         model,
+        config: cfg,
         apiKey: auth.apiKey,
-        headers: auth.headers,
+        headers: requestHeaders,
         sessionId,
         input: promptResponseItems,
         instructions: ctx.getSystemPrompt(),
@@ -330,7 +343,10 @@ export default function openaiServerCompactionExtension(pi: ExtensionAPI) {
     });
     const remoteState = getMatchingRemoteState(sessionId, model);
 
-    if (isOpenAICodexResponsesModel(model)) {
+    if (
+      isOpenAICodexResponsesModel(model) ||
+      isConfiguredCompatibleResponsesModel(model, cfg)
+    ) {
       if (!remoteState) return undefined;
       const payload = applyRemoteHistoryPayloadPatch({
         payload: event.payload,
